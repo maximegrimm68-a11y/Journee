@@ -1,8 +1,9 @@
 'use strict';
 /* Journée — modèle : constantes, calculs et format de données. Aucun accès au DOM ni au stockage. */
 /* =====================================================================
-   JOURNÉE — v1.4.1
-   Fusion de « Ma Pile » (batterie) et « Infinity Time » (natures du temps)
+   JOURNÉE — v1.5.0
+   Fusion de « Ma Pile » (batterie), « Infinity Time » (natures du temps)
+   et « Trier » (sollicitations, matrice, 32e jour)
    Règles issues de F. Olicard :
    - créneau de 20 min, tâche étalon = 1 créneau d'énergie, capacité de
      l'auteur 33 (journée de 11 h) — « Ce livre vous fera gagner du temps »
@@ -10,7 +11,7 @@
    Hypothèses à calibrer : niveaux 0, ½, 3 et Recharge (−1) ;
    recalibrage de la capacité sur la médiane des jours « fatigue 3/5 ».
    ===================================================================== */
-const APP_VERSION = '1.4.1', SCHEMA = 2, SLOT = 20, NS = 72, PX = 18, KEY = 'journee.v1', IT_KEY = 'infinity_data_v10';
+const APP_VERSION = '1.5.0', SCHEMA = 3, SLOT = 20, NS = 72, PX = 18, KEY = 'journee.v1', IT_KEY = 'infinity_data_v10';
 const CATS = {
   pro:         { code: 'PRO', label: 'Professionnel', color: '#5B95FF' },
   perso:       { code: 'PER', label: 'Personnel',     color: '#34C48E' },
@@ -57,13 +58,15 @@ const levelOf = v => LEVELS.find(l => l.v === v) || LEVELS[3];
 const costStr = x => { const c = (x.e - x.s) * x.i; return c > 0 ? '−' + fmtE(c) : c < 0 ? '+' + fmtE(-c) : '0'; };
 const median = a => { const s = [...a].sort((x, y) => x - y), n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null; };
 /* Conversions de format vers la forme en mémoire (v1 = forme riche, v2 = forme compacte sur disque) */
-function migrate(o) { return o && o.v === 2 ? unpack(o) : o; }
+function migrate(o) { return o && (o.v === 2 || o.v === 3) ? unpack(o) : o; }
 
 /* ---------- format compact v2 ----------
    Jour : [ds, validé (min epoch), clôturé (min epoch), fatigue, durée bilan (s), blocs, plan, nuit confirmée]
    Bloc : 7 entiers à plat — début, fin, nature, niveau × 2, pause, sommeil, n° de libellé
    Plan : 0 = aucun, 1 = identique au réel, sinon blocs au même format
-   Libellés : dictionnaire commun L                                               */
+   Libellés : dictionnaire commun L
+   v3 (1.5) = v2 + objet tr (tâches de Trier, boîte, filtres, valeur horaire, 32e jour) ;
+   l'ancienne file « backlog » devient des tâches de tr                          */
 const PK = Object.keys(PAUSES);
 function packBlocks(b, L, M) {
   const a = [];
@@ -85,7 +88,7 @@ function pack(db) {
     days[k] = [d.ds, d.val ? Math.round(d.val / 6e4) : 0, d.clo ? Math.round(d.clo / 6e4) : 0, d.fat || 0, d.bt || 0,
       packBlocks(b, L, M), sn == null ? 0 : sameBlocks(sn, b) ? 1 : packBlocks(sn, L, M), d.nc ? 1 : 0];
   }
-  return { v: 2, settings: db.settings, capLog: db.capLog, catalog: db.catalog, templates: db.templates, backlog: db.backlog, legacy: db.legacy, lastExport: db.lastExport, L, days };
+  return { v: 3, settings: db.settings, capLog: db.capLog, catalog: db.catalog, templates: db.templates, tr: db.tr, legacy: db.legacy, lastExport: db.lastExport, L, days };
 }
 function unpackBlocks(a, L) {
   const b = []; if (!Array.isArray(a)) return b;
@@ -215,10 +218,12 @@ function normalize(o) {
     catalog: Array.isArray(o.catalog) ? keep(o.catalog, nItem) : D.catalog,
     templates: Array.isArray(o.templates) ? keep(o.templates, t => t && Array.isArray(t.b) ? { id: t.id || uid(), n: String(t.n || 'Modèle'), wd: Array.isArray(t.wd) ? [...new Set(t.wd.filter(w => Number.isInteger(w) && w >= 0 && w <= 6))] : [], b: keep(t.b, x => Number.isInteger(x && x.m) && x.m >= 0 && x.m < 1440 && x.m % SLOT === 0 && nItem(x) ? { ...nItem(x), m: x.m } : null).map(({ id, ...r }) => r) } : null) : D.templates,
     days: {},
-    backlog: keep(o.backlog, x => { const y = nItem(x); return y ? { ...y, from: typeof x.from === 'string' ? x.from : '' } : null; }),
     legacy: o.legacy && typeof o.legacy === 'object' && !Array.isArray(o.legacy) ? o.legacy : {},
     lastExport: Number.isFinite(o.lastExport) ? o.lastExport : null
   };
+  // Trier : tâches, boîte, filtres… ; l'ancienne file « À replacer » (backlog, v2) devient des tâches reportées du bilan
+  const [tr, badT] = normTr(o.tr); bad += badT; n.tr = tr;
+  for (const x of keep(o.backlog, nItem)) if (!tr.items.some(z => z.id === x.id)) tr.items.push(newTask(x.n, { id: x.id, st: 'todo', og: 'bilan', from: isDate((o.backlog.find(z => z && z.id === x.id) || {}).from) ? o.backlog.find(z => z.id === x.id).from : '', c: x.c, i: x.i, d: x.d, t: x.t, z: x.z }));
   if (!n.capLog.length) n.capLog = [{ d: '0000-00-00', v: settings.cap }];
   for (const [k, dy] of Object.entries(o.days && typeof o.days === 'object' ? o.days : {})) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(k) || !dy || !Array.isArray(dy.b)) { bad++; continue; }
@@ -255,7 +260,7 @@ function defaults() {
     ['16:40', '17:20', 'Trajet'], ['17:20', '19:20', 'Temps enfant'], ['19:20', '20:20', 'Repas'], ['21:40', '24:00', 'Sommeil']];
   const tpl = { id: uid(), n: 'Exemple semaine (à adapter)', wd: [0, 1, 2, 3, 4], b: T.map(([a, z, n]) => { const c = C(n); return { m: tm(a), d: (((tm(z) - tm(a)) + 1440) % 1440) / SLOT, n: c.n, c: c.c, i: c.i, t: c.t, z: c.z }; }) };
   return { v: 1, settings: { cap: 33, ds: 0, etalon: '', anchors: { ...DEF_ANCHORS }, nt: 60, first: true }, capLog: [{ d: '0000-00-00', v: 33 }],
-    catalog: cat, templates: [tpl], days: {}, backlog: [], legacy: {}, lastExport: null };
+    catalog: cat, templates: [tpl], days: {}, tr: defaultTr(), legacy: {}, lastExport: null };
 }
 function nowRel(ds) { const n = new Date(); const m = n.getHours() * 60 + n.getMinutes() + n.getSeconds() / 60; return ((m - ds) + 1440) % 1440; }
 const sortB = d => d.b.sort((a, b) => a.s - b.s);
@@ -311,5 +316,110 @@ function tplBlocks(t, ds) {
   return out;
 }
 
+/* =====================================================================
+   TRIER (1.5) — règles de F. Olicard :
+   - règle des 120 s (Ce livre vous fera gagner du temps, 2025)
+   - matrice d'Eisenhower, « une seule tâche aujourd'hui », filtres en entonnoir,
+     valeur horaire, 32e jour (Votre temps est infini, 2019)
+   Une tâche : inbox (à trier) → todo (à faire / à planifier / prévue un jour sans heure)
+   → placed (bloc posé dans une journée) → done ; ou delegated, dropped, box.
+   Lien tâche ↔ bloc : même journée, même libellé (les blocs n'ont pas d'identifiant durable).
+   ===================================================================== */
+const QUAD = {
+  q1: { code: 'Q1', verb: 'Faire',     label: 'Urgent et important',    color: '#F0605D' },
+  q2: { code: 'Q2', verb: 'Planifier', label: 'Important, pas urgent',  color: '#34C48E' },
+  q3: { code: 'Q3', verb: 'Déléguer',  label: 'Urgent, pas important',  color: '#E8A93F' },
+  q4: { code: 'Q4', verb: 'Oublier',   label: 'Ni urgent ni important', color: '#97A2B6' }
+};
+const quadrant = (imp, urg) => imp ? (urg ? 'q1' : 'q2') : (urg ? 'q3' : 'q4');
+const DEF_FILTERS = [['Rentabilité', 1], ['Charge temporelle et faisabilité', 1], ['Développement de carrière', 0], ['Plaisir et passion', 0]];
+const isDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const num = v => { const x = typeof v === 'string' ? parseFloat(v.replace(',', '.').replace(/\s/g, '')) : v; return Number.isFinite(x) ? x : null; };
+function hourValue(vh) { const a = ['a', 'b', 'c', 'd'].map(k => vh ? vh[k] : null); return a.every(x => Number.isFinite(x) && x >= 0) ? a.reduce((s, x) => s + x, 0) / 4 : null; }
+const worthMax = (minutes, vh) => minutes / 60 * vh;
+function lastDay(k) { const d = keyToDate(k); return ymd(new Date(d.getFullYear(), d.getMonth() + 1, 0)); }
+function drawBox(box, r = Math.random()) { const open = box.filter(x => !x.done); return open.length ? open[Math.min(open.length - 1, Math.floor(r * open.length))] : null; }
+const ST = ['inbox', 'todo', 'placed', 'done', 'delegated', 'dropped', 'box'];
+const RELANCE_J = 7, TASK_D = 3;   // relance d'une délégation à 7 jours, durée proposée 1 h (choix de l'app)
+function newTask(n, f = {}) {
+  return { id: uid(), n, at: Date.now(), st: 'inbox', q: null, nt: null, dl: '', pd: '', ps: null, pl: 0, h2: 0, who: '', rd: '', end: null, og: 'tri', from: '', c: null, i: null, d: null, t: 'aucune', z: 0, ...f };
+}
+/* Ordre des tâches à faire : Q1 d'abord, puis date prévue, échéance, ancienneté */
+function sortTodo(items) {
+  const rk = x => x.q === 'q1' ? 0 : 1, d = s => s || '9999-99-99';
+  return [...items].sort((a, b) => rk(a) - rk(b) || d(a.pd).localeCompare(d(b.pd)) || d(a.dl).localeCompare(d(b.dl)) || a.at - b.at);
+}
+const isQ1 = x => x.st === 'todo' && !x.pd && x.q === 'q1';
+const toPlan = x => x.st === 'todo' && !x.pd && x.q !== 'q1';         // « À planifier » : Q2, Q4 plaisir, reports du bilan
+const planned = x => (x.st === 'todo' && !!x.pd) || x.st === 'placed';   // « Prévu » : un jour, avec ou sans heure
+function defaultTr() { return { items: [], box: [], filters: { pro: DEF_FILTERS.map(([n, e]) => ({ id: uid(), n, e })), perso: [] }, decisions: [], vh: { a: null, b: null, c: null, d: null }, d32: { h: 12, cur: null }, focus: null, imp: null }; }
+function nTask(x) {
+  if (!x || typeof x.n !== 'string') return null;
+  const t = { id: typeof x.id === 'string' && x.id ? x.id : uid(), n: x.n, at: Number.isFinite(x.at) ? x.at : Date.now(),
+    st: ST.includes(x.st) ? x.st : 'inbox', q: QUAD[x.q] ? x.q : null, nt: [1, 2, 3].includes(x.nt) ? x.nt : null,
+    dl: isDate(x.dl) ? x.dl : '', pd: isDate(x.pd) ? x.pd : '', ps: Number.isInteger(x.ps) && x.ps >= 0 && x.ps < NS ? x.ps : null, pl: x.pl ? 1 : 0, h2: x.h2 ? 1 : 0,
+    who: String(x.who || ''), rd: isDate(x.rd) ? x.rd : '', end: Number.isFinite(x.end) ? x.end : null,
+    og: x.og === 'bilan' ? 'bilan' : 'tri', from: isDate(x.from) ? x.from : '',
+    c: CATS[x.c] ? x.c : null, i: okLvl(x.i) ? x.i : null, d: Number.isInteger(x.d) && x.d >= 1 && x.d <= NS ? x.d : null, t: PAUSES[x.t] ? x.t : 'aucune', z: x.z ? 1 : 0 };
+  if (t.st === 'placed' && (!t.pd || t.ps == null)) { t.st = 'todo'; t.ps = null; }
+  if (t.st !== 'placed') t.ps = null;
+  return t;
+}
+function normTr(ot) {
+  const D = defaultTr(); let bad = 0;
+  ot = ot && typeof ot === 'object' ? ot : {};
+  const arr = a => Array.isArray(a) ? a : [];
+  const keep = (a, f) => { const out = []; for (const x of arr(a)) { const y = f(x); if (y) out.push(y); else bad++; } return out; };
+  const nf = (a, def) => Array.isArray(a) ? keep(a, f => f && typeof f.n === 'string' && f.n.trim() ? { id: typeof f.id === 'string' && f.id ? f.id : uid(), n: f.n, e: f.e ? 1 : 0 } : null) : def.map(f => ({ ...f }));
+  const filters = { pro: nf(ot.filters && ot.filters.pro, D.filters.pro), perso: nf(ot.filters && ot.filters.perso, []) };
+  const fids = new Set([...filters.pro, ...filters.perso].map(f => f.id));
+  const items = keep(ot.items, nTask);
+  const box = keep(ot.box, x => x && typeof x.n === 'string' ? { id: typeof x.id === 'string' && x.id ? x.id : uid(), n: x.n, at: Number.isFinite(x.at) ? x.at : Date.now(), done: Number.isFinite(x.done) ? x.done : null } : null);
+  const decisions = keep(ot.decisions, x => x && typeof x.n === 'string' ? { id: typeof x.id === 'string' && x.id ? x.id : uid(), n: x.n, g: String(x.g || ''), set: x.set === 'perso' ? 'perso' : 'pro', at: Number.isFinite(x.at) ? x.at : Date.now(),
+    ans: Object.fromEntries(Object.entries(x.ans && typeof x.ans === 'object' ? x.ans : {}).filter(([k, v]) => fids.has(k) && typeof v === 'boolean')) } : null);
+  const cur = ot.d32 && typeof ot.d32.cur === 'string' && box.some(x => x.id === ot.d32.cur && !x.done) ? ot.d32.cur : null;
+  const focus = typeof ot.focus === 'string' && items.some(x => x.id === ot.focus && (x.st === 'todo' || x.st === 'placed')) ? ot.focus : null;
+  return [{ items, box, filters, decisions, focus, imp: Number.isFinite(ot.imp) ? ot.imp : null,
+    vh: Object.fromEntries(['a', 'b', 'c', 'd'].map(k => [k, ot.vh && Number.isFinite(ot.vh[k]) && ot.vh[k] >= 0 ? ot.vh[k] : null])),
+    d32: { h: ot.d32 && Number.isInteger(ot.d32.h) && ot.d32.h >= 9 && ot.d32.h <= 18 ? ot.d32.h : 12, cur } }, bad];
+}
+/* Import des données de l'app Trier séparée (clé trier.v1 ou sauvegarde) : ajoute sans écraser */
+function mergeTrier(tr, o) {
+  const [src] = normTr(o && o.tr), has = new Set(tr.items.map(x => x.id)), hasB = new Set(tr.box.map(x => x.id)), hasD = new Set(tr.decisions.map(x => x.id));
+  const items = src.items.filter(x => !has.has(x.id)), box = src.box.filter(x => !hasB.has(x.id)), dec = src.decisions.filter(x => !hasD.has(x.id));
+  tr.items.push(...items); tr.box.push(...box); tr.decisions.push(...dec);
+  const pristine = tr.filters.perso.length === 0 && tr.filters.pro.map(f => f.n + f.e).join() === DEF_FILTERS.map(([n, e]) => n + e).join();
+  if (pristine) tr.filters = src.filters;
+  if (hourValue(tr.vh) == null && hourValue(src.vh) != null) tr.vh = src.vh;
+  if (tr.d32.h === 12) tr.d32.h = src.d32.h;
+  return { items: items.length, box: box.length, decisions: dec.length };
+}
+/* Bloc d'une tâche posée à l'heure s */
+const taskBlock = (x, s) => ({ id: uid(), s, e: Math.min(NS, s + (x.d || TASK_D)), n: x.n, c: x.c || 'perso', i: x.i ?? 1, t: x.t || 'aucune', z: 0 });
+const backToPlan = (x, k) => Object.assign(x, { st: 'todo', pd: '', ps: null, from: k || x.pd || '' });
+/* Tâches posées dont le bloc a disparu d'une journée non clôturée (supprimé, renommé, recouvert) : retour dans « À planifier » */
+function syncPlaced(db) {
+  let n = 0; const used = {};
+  for (const x of db.tr.items) {
+    if (x.st !== 'placed') continue;
+    const d = db.days[x.pd]; if (d && d.clo) continue;
+    const key = x.pd + '|' + x.n, have = d ? d.b.filter(b => b.n === x.n).length : 0; used[key] = (used[key] || 0) + 1;
+    if (used[key] > have) { backToPlan(x, x.pd); n++; }
+  }
+  return n;
+}
+/* Clôture de la journée k : une tâche posée dont le bloc est toujours là (même libellé) est faite ;
+   sinon, ou si elle était prévue ce jour sans heure, elle revient dans « À planifier » */
+function closeTasks(db, k, when) {
+  const d = db.days[k], left = {}; let done = 0, back = 0;
+  if (d) for (const b of d.b) left[b.n] = (left[b.n] || 0) + 1;
+  for (const x of db.tr.items) {
+    if (x.pd !== k) continue;
+    if (x.st === 'placed' && left[x.n] > 0) { left[x.n]--; Object.assign(x, { st: 'done', end: when }); if (db.tr.focus === x.id) db.tr.focus = null; done++; }
+    else if (x.st === 'placed' || x.st === 'todo') { backToPlan(x, k); back++; }
+  }
+  return { done, back };
+}
+
 /* Export pour les tests unitaires sous Node (ignoré dans le navigateur) */
-if (typeof module === 'object' && module.exports) module.exports = { SLEEP, morningRun, eveningStart, nightOf, setNight, PK, DEF_ANCHORS, packBlocks, sameBlocks, pack, unpackBlocks, unpack, mean, sd, pearson, ranks, spearman, rCrit, planBias, natureChange, sleepBefore, APP_VERSION, SCHEMA, SLOT, NS, PX, KEY, IT_KEY, CATS, CAT_ORDER, LEVELS, PAUSES, FATIGUE, pad, uid, esc, clamp, ymd, keyToDate, addDays, clock, slotClock, tm, fmtE, fmtH, dur, fmtSec, WD, tint, fmtDay, cap1, levelOf, costStr, median, migrate, LV, okLvl, nBlock, nItem, normalize, defaults, nowRel, sortB, gaps, gapSlots, energy, slotMap, status, conformity, blockDiff, paint, mergeAdj, tplBlocks };
+if (typeof module === 'object' && module.exports) module.exports = { SLEEP, morningRun, eveningStart, nightOf, setNight, PK, DEF_ANCHORS, packBlocks, sameBlocks, pack, unpackBlocks, unpack, mean, sd, pearson, ranks, spearman, rCrit, planBias, natureChange, sleepBefore, APP_VERSION, SCHEMA, SLOT, NS, PX, KEY, IT_KEY, CATS, CAT_ORDER, LEVELS, PAUSES, FATIGUE, pad, uid, esc, clamp, ymd, keyToDate, addDays, clock, slotClock, tm, fmtE, fmtH, dur, fmtSec, WD, tint, fmtDay, cap1, levelOf, costStr, median, migrate, LV, okLvl, nBlock, nItem, normalize, defaults, QUAD, quadrant, DEF_FILTERS, isDate, num, hourValue, worthMax, lastDay, drawBox, ST, RELANCE_J, TASK_D, newTask, sortTodo, isQ1, toPlan, planned, defaultTr, nTask, normTr, mergeTrier, taskBlock, backToPlan, syncPlaced, closeTasks, nowRel, sortB, gaps, gapSlots, energy, slotMap, status, conformity, blockDiff, paint, mergeAdj, tplBlocks };

@@ -117,6 +117,44 @@ textarea{font:12px/1.35 ui-monospace,monospace}
 .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
 .cal div{aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
 ol.steps{padding-left:18px}ol.steps li{margin:4px 0}
+/* Trier : matrice en un appui */
+.mx{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.mx button{min-height:66px;background:var(--s2);border:1px solid var(--bd);border-left:5px solid;border-radius:10px;padding:8px 10px;text-align:left;display:flex;flex-direction:column;justify-content:center;gap:2px}
+.mx button b{font-size:15px}
+.mx button small{font-size:11.5px;color:var(--mu);font-weight:600}
+/* sections repliables */
+details.card>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;margin:-14px;padding:0 14px;cursor:pointer;font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--mu);font-weight:700}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary span:first-child:before{content:"›";display:inline-block;margin-right:8px;font-size:15px;transition:transform .15s}
+details.card[open]>summary{margin-bottom:0}
+details.card[open]>summary span:first-child:before{transform:rotate(90deg)}
+details.card .tag{text-transform:none;letter-spacing:0}
+details.card .xs{text-transform:none;letter-spacing:0;font-weight:500}
+details.sub>summary{min-height:44px;display:flex;align-items:center;color:var(--ac);font-size:13px;font-weight:650;cursor:pointer;margin-top:6px}
+.card.tap{cursor:pointer}
+.month{margin:6px 8px 14px}
+.seg.days button{font-size:11.5px;padding:6px 0}
+.seg.days button small{font-size:13px;font-weight:800;opacity:1}
+/* agenda de la semaine */
+.wkcard{padding:10px 8px}
+.wk{display:grid;grid-template-columns:22px repeat(7,1fr);gap:3px;align-items:end}
+.wkax{position:relative;font-size:9.5px;color:var(--mu)}
+.wkax span{position:absolute;right:2px;transform:translateY(-50%)}
+.wkax span:first-child{transform:none}
+.wkd{min-width:0}
+.wkh{position:relative;width:100%;min-height:48px;background:var(--s2);border:1px solid var(--bd);border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3px 0;margin-bottom:4px;line-height:1.1}
+.wkh b{font-size:10.5px;color:var(--mu);font-weight:700}
+.wkh span{font-size:14px;font-weight:800}
+.wkh small{font-size:10px;font-weight:700}
+.wkh.on{border-color:var(--ac);box-shadow:inset 0 0 0 1px var(--ac)}
+.wkn{position:absolute;top:-6px;right:-4px;background:var(--ac);color:#0B1020;font-style:normal;font-size:9.5px;font-weight:800;border-radius:9px;padding:1px 4px}
+.wkc{position:relative;background:repeating-linear-gradient(to bottom,#141c33 0 62px,#18213a 62px 63px);border-radius:6px;cursor:pointer;overflow:hidden}
+.wkc.ro{opacity:.6}
+.wkb{position:absolute;left:0;right:0;border-left:3px solid;border-radius:3px;overflow:hidden}
+.wkb span{display:block;font-size:9px;line-height:1.2;padding:2px 2px 0 3px;color:var(--tx);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.wkb.gh{border-left-style:dashed;opacity:.8}
+.wkb.tk{box-shadow:inset 0 0 0 1.5px #E7EBF3}
+.wknow{position:absolute;left:0;right:0;height:2px;background:var(--bad);z-index:2;pointer-events:none}
 </style>
 </head>
 <body>
@@ -127,6 +165,7 @@ ol.steps{padding-left:18px}ol.steps li{margin:4px 0}
 <main id="view"></main>
 <nav>
   <button data-t="maintenant" onclick="A.tab('maintenant')"><svg viewBox="0 0 24 24"><rect x="7" y="4" width="10" height="17" rx="2"/><path d="M10 2h4M10 16h4M10 12h4"/></svg>Maintenant</button>
+  <button data-t="trier" onclick="A.tab('trier')"><svg viewBox="0 0 24 24"><path d="M4 5h16l-6 7.5V18l-4 2v-7.5z"/></svg>Trier</button>
   <button data-t="journee" onclick="A.tab('journee')"><svg viewBox="0 0 24 24"><path d="M8 5h12M8 12h8M8 19h10"/><circle cx="4" cy="5" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="19" r="1"/></svg>Journée</button>
   <button data-t="stats" onclick="A.tab('stats')"><svg viewBox="0 0 24 24"><path d="M5 20V11M12 20V4M19 20v-6"/></svg>Stats</button>
   <button data-t="reglages" onclick="A.tab('reglages')"><svg viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>Réglages</button>
@@ -137,6 +176,7 @@ ol.steps{padding-left:18px}ol.steps li{margin:4px 0}
 <div id="undo"></div>
 
 <script src="model.js"></script>
+<script src="trier.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

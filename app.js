@@ -1,5 +1,5 @@
 'use strict';
-/* Journée — application : stockage, interface et actions. Charge model.js avant ce fichier. */
+/* Journée — application : stockage, interface et actions. Charge model.js puis trier.js avant ce fichier. */
 /* ---------- utilitaires ---------- */
 const $ = s => document.querySelector(s);
 
@@ -29,6 +29,7 @@ function save() {
   if (READONLY) return false;
   const disk = Number(lsGet(REV_KEY)) || 0;
   if (disk !== REV) { reloadFromDisk('Données modifiées dans une autre fenêtre : rechargées. Ta dernière action n’a pas été enregistrée, refais-la.'); return false; }
+  syncPlaced(DB);   // une tâche dont le bloc a disparu (supprimé, renommé, recouvert) revient dans « À planifier »
   const txt = JSON.stringify(pack(DB));
   if (lsSet(KEY, txt)) { REV = disk + 1; lsSet(REV_KEY, String(REV)); STORAGE_OK = true; USED = txt.length; return true; }
   STORAGE_OK = false; toast('Échec d’enregistrement : exporte tes données'); return false;
@@ -41,8 +42,9 @@ else {
   const [n, bad] = normalize(migrate(DB));
   if (bad) { lsSet(KEY + '.avant-reparation.' + Date.now(), lsGet(KEY) || ''); LOAD_NOTE = `${bad} élément(s) invalide(s) écarté(s) au chargement (copie d'origine conservée).`; }
   DB = n;
-  if (MIGRATED && save()) LOAD_NOTE = `Données converties au format compact v${SCHEMA} : ${(MIGRATED.size / 1e3).toFixed(0)} k → ${(USED / 1e3).toFixed(0)} k caractères. Une copie de l'ancien format reste sur le téléphone (Réglages → Données).`;
+  if (MIGRATED && save()) LOAD_NOTE = MIGRATED.from === 2 ? `Données converties au format v${SCHEMA} (Journée + Trier). La file « À replacer » est devenue « À planifier » (onglet Trier). Une copie de l'ancien format reste sur le téléphone (Réglages → Données).` : `Données converties au format compact v${SCHEMA} : ${(MIGRATED.size / 1e3).toFixed(0)} k → ${(USED / 1e3).toFixed(0)} k caractères. Une copie de l'ancien format reste sur le téléphone (Réglages → Données).`;
 }
+autoImportTrier();
 
 /* Recharge depuis le stockage (autre fenêtre) ; ferme l'édition en cours et oublie l'annulation */
 function reloadFromDisk(msg) {
@@ -76,7 +78,8 @@ function undoable(label, fn) {
 }
 
 /* ---------- interface : état ---------- */
-const UI = { tab: 'maintenant', dk: null, sMode: 'semaine', sA: null, ed: null, ce: null, txt: '', scroll: true };
+const TABS = ['maintenant', 'trier', 'journee', 'stats', 'reglages'];
+const UI = { tab: 'maintenant', dk: null, dv: 'jour', sMode: 'semaine', sA: null, ed: null, ce: null, txt: '', scroll: true, tg: null, it: null, dg: null, fe: null, pl: null, fset: 'pro', calc: '' };
 
 function render() {
   const t = UI.tab;
@@ -87,15 +90,15 @@ function render() {
     return;
   }
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === t));
-  $('#title').textContent = { maintenant: 'Maintenant', journee: 'Journée', stats: 'Statistiques', reglages: 'Réglages' }[t];
+  $('#title').textContent = { maintenant: 'Maintenant', trier: 'Trier', journee: 'Journée', stats: 'Statistiques', reglages: 'Réglages' }[t];
   $('#hsub').textContent = fmtDay(todayKey());
   let html;
-  try { html = alerts() + (t === 'maintenant' ? vNow() : t === 'journee' ? vDay() : t === 'stats' ? vStats() : vSet()); }
+  try { html = alerts() + (t === 'maintenant' ? vNow() : t === 'trier' ? vTri() : t === 'journee' ? (UI.dv === 'semaine' ? vWeek() : vDay()) : t === 'stats' ? vStats() : vSet()); }
   catch (e) {
     html = `<div class="alert"><b>Erreur d'affichage</b><p class="small mt">${esc(e.message)}</p><p class="small mu mt">Tes données ne sont pas modifiées.</p><button class="btn mt" onclick="A.exportRaw()">Exporter les données</button></div>`;
   }
   $('#view').innerHTML = html;
-  if (t === 'journee' && UI.scroll) { UI.scroll = false; scrollToNow(); }
+  if (t === 'journee' && UI.scroll) { UI.scroll = false; if (UI.dv === 'jour') scrollToNow(); }
 }
 /* Alertes visibles sur tous les écrans */
 function alerts() {
@@ -142,7 +145,7 @@ function banners(k) {
 
 function vNow() {
   const k = todayKey(), d = day(k), cap = capAt(k);
-  let h = banners(k);
+  let h = banners(k) + trierNow();
   if (DB.settings.first) h += `<div class="card"><h2>Démarrage</h2><ol class="steps small">
     <li><b>Réglages</b> : écris ta tâche étalon (20 min neutres, peu exigeantes = 1 créneau d'énergie) et affecte tes modèles aux jours de la semaine.</li>
     <li><b>Journée</b> : applique le modèle, adapte les blocs, valide le plan.</li>
@@ -183,7 +186,7 @@ function vDay() {
   const k = UI.dk || todayKey(); UI.dk = k;
   const d = day(k), st = status(d), cap = capAt(k), ds = d ? d.ds : DB.settings.ds, b = d ? d.b : [], past = k <= todayKey();
   const lab = { vide: ['Vide', ''], brouillon: ['Brouillon', 'warn'], valide: ['Plan validé', 'ok'], clos: ['Clôturée', ''] }[st];
-  let h = `<div class="dnav"><button class="arw" onclick="A.shift(-1)">‹</button><div class="t"><b>${cap1(fmtDay(k, true))}</b><span class="tag ${lab[1]}">${lab[0]}</span>${k === todayKey() ? ' <span class="tag">Aujourd’hui</span>' : ''}</div><button class="arw" onclick="A.shift(1)">›</button></div>`;
+  let h = dvSeg() + `<div class="dnav"><button class="arw" onclick="A.shift(-1)">‹</button><div class="t"><b>${cap1(fmtDay(k, true))}</b><span class="tag ${lab[1]}">${lab[0]}</span>${k === todayKey() ? ' <span class="tag">Aujourd’hui</span>' : ''}</div><button class="arw" onclick="A.shift(1)">›</button></div>`;
   const real = energy(b), plan = d && d.snap ? energy(d.snap) : real, un = gapSlots(b);
   h += `<div class="card">`;
   if (st === 'vide' || st === 'brouillon') {
@@ -205,11 +208,45 @@ function vDay() {
   }
   h += `<div class="row wrap mt">${st !== 'clos' ? `<button class="btn sm" onclick="A.insert('${k}')">Ajouter un bloc</button>` : ''}${b.length ? `<button class="btn sm" onclick="A.saveTpl('${k}')">Enregistrer comme modèle</button>` : ''}${st === 'brouillon' ? `<button class="btn sm bad" onclick="A.clearDay('${k}')">Vider</button>` : ''}</div>`;
   h += `</div>`;
-  if (st !== 'clos' && DB.backlog.length) {
-    h += `<div class="card"><h2>À replacer · ${DB.backlog.length}</h2>${DB.backlog.map(x => `<div class="li tap" onclick="A.placeBacklog('${k}','${x.id}')">${catChip(x.c)}<div class="n"><b>${esc(x.n)}</b><span class="xs mu">${dur(x.d)}${x.from ? ' · reporté du ' + fmtDay(x.from) : ''}</span></div><span class="small mu">Placer</span></div>`).join('')}</div>`;
+  if (st !== 'clos' && k >= todayKey()) {
+    // tâches de Trier : prévues ce jour sans heure, puis à planifier ; « Placer » = premier créneau libre assez long
+    const pv = DB.tr.items.filter(x => x.st === 'todo' && x.pd === k), tp = DB.tr.items.filter(x => isQ1(x) || toPlan(x));
+    const row = x => `<div class="li tap" onclick="A.placeTask('${k}','${x.id}')">${x.q ? qChip(x.q) : x.c ? catChip(x.c) : ''}<div class="n"><b>${esc(x.n)}</b><span class="xs mu">${itMeta(x)}</span></div><span class="small mu">Placer</span></div>`;
+    if (pv.length) h += `<div class="card"><h2>Prévu ce jour, sans heure · ${pv.length}</h2>${pv.map(row).join('')}</div>`;
+    if (tp.length) h += `<details class="card"${pv.length ? '' : ' open'}><summary><span>À planifier · ${tp.length}</span></summary>${tp.map(row).join('')}</details>`;
   }
   if (st !== 'clos' && b.length) h += `<p class="xs mu" style="margin:0 2px 6px">Touche un bloc pour le modifier : l'allonger raccourcit le voisin, le raccourcir allonge le voisin collé.${d && d.snap ? ' Pointillés orange = différent du plan.' : ''}</p>`;
   return h + timeline(k, d, ds, st === 'clos');
+}
+
+function dvSeg() { return `<div class="seg" style="margin-bottom:10px"><button class="${UI.dv === 'jour' ? 'on' : ''}" onclick="A.dv('jour')">Jour</button><button class="${UI.dv === 'semaine' ? 'on' : ''}" onclick="A.dv('semaine')">Semaine</button></div>`; }
+/* Tâches que « Préparer » place sur le jour nk : prévues ce jour sans heure, puis reportées du bilan (comme la file « À replacer » de la 1.4) */
+function prepList(nk) {
+  const T = DB.tr.items, byDl = (a, b) => (a.dl || '9').localeCompare(b.dl || '9') || a.at - b.at;
+  return [...T.filter(x => x.st === 'todo' && x.pd === nk).sort(byDl), ...T.filter(x => toPlan(x) && x.og === 'bilan').sort(byDl)];
+}
+/* ---------- agenda de la semaine ---------- */
+const WKPX = 7;   // hauteur d'un créneau de 20 min dans l'agenda de la semaine (24 h = 504 px)
+function vWeek() {
+  const k0 = UI.dk || todayKey(), mon = addDays(k0, -((keyToDate(k0).getDay() + 6) % 7)), ks = [...Array(7)].map((_, i) => addDays(mon, i)), t = todayKey();
+  let h = dvSeg() + `<div class="dnav"><button class="arw" onclick="A.wkShift(-1)">‹</button><div class="t"><b>${cap1(fmtDay(ks[0]))} – ${fmtDay(ks[6])}</b><span class="xs mu">énergie planifiée / capacité</span></div><button class="arw" onclick="A.wkShift(1)">›</button></div>`;
+  const ax = [...Array(9)].map((_, i) => `<span style="top:${i * 9 * WKPX}px">${pad(i * 3)}</span>`).join('');
+  const cols = ks.map(k => {
+    const d = day(k), st = status(d), cap = capAt(k), b = d ? d.b : [], tpl = !b.length && !(d && d.val) && k >= t ? tplFor(k) : null;
+    const shown = b.length ? b : tpl ? tplBlocks(tpl, DB.settings.ds) : [], e = energy(d && d.snap && st !== 'brouillon' ? d.b : shown), ds = d ? d.ds : DB.settings.ds;
+    const tk = new Set(DB.tr.items.filter(x => x.st === 'placed' && x.pd === k).map(x => x.n)), nh = DB.tr.items.filter(x => x.st === 'todo' && x.pd === k).length;
+    const blocks = shown.map(x => { const c = CATS[x.c], H = (x.e - x.s) * WKPX; return `<div class="wkb${b.length ? '' : ' gh'}${b.length && tk.has(x.n) ? ' tk' : ''}" style="top:${x.s * WKPX}px;height:${H - 1}px;background:${tint(c.color, b.length ? .5 : .18)};border-left-color:${c.color}">${H >= 22 ? `<span>${esc(x.n || c.label)}</span>` : ''}</div>`; }).join('');
+    const nr = k === t ? nowRel(ds) : null;
+    return `<div class="wkd"><button class="wkh${k === t ? ' on' : ''}" onclick="A.goDay('${k}')"><b>${fmtDay(k).split(' ')[0]}</b><span class="num">${keyToDate(k).getDate()}</span><small class="num ${e > cap ? 'c-bad' : st === 'clos' ? 'mu' : ''}">${shown.length || st !== 'vide' ? fmtE(e) : '·'}${st === 'clos' ? ' ✓' : ''}</small>${nh ? `<i class="wkn">+${nh}</i>` : ''}</button>
+      <div class="wkc${st === 'clos' || k < t ? ' ro' : ''}" style="height:${NS * WKPX}px" onclick="A.wkTap('${k}', event)">${blocks}${nr != null ? `<div class="wknow" style="top:${(nr / SLOT * WKPX).toFixed(1)}px"></div>` : ''}</div></div>`;
+  }).join('');
+  h += `<div class="card wkcard"><div class="wk"><div class="wkax" style="height:${NS * WKPX}px">${ax}</div>${cols}</div>
+    <p class="xs mu mt">Touche un créneau libre pour y poser une tâche, un bloc pour le modifier, un jour pour l'ouvrir. Contour blanc : tâche de Trier · pâle : modèle pas encore appliqué · +n : tâches prévues sans heure.</p></div>`;
+  const nh = DB.tr.items.filter(x => x.st === 'todo' && x.pd >= ks[0] && x.pd <= ks[6]).sort((a, b) => a.pd.localeCompare(b.pd));
+  if (nh.length) h += `<div class="card"><h2>Prévu sans heure cette semaine · ${nh.length}</h2>${nh.map(itRow).join('')}</div>`;
+  const tp = DB.tr.items.filter(x => isQ1(x) || toPlan(x)).length;
+  h += `<div class="card tap row sp" onclick="A.tab('trier')"><span class="small"><b>${tp}</b> tâche${tp > 1 ? 's' : ''} à planifier</span><span class="small mu">Trier ›</span></div>`;
+  return h;
 }
 
 const rowH = n => Math.max(44, n * 16);
@@ -345,9 +382,12 @@ function vSet() {
   h += `<div class="card"><div class="row sp"><h2 style="margin:0">Catalogue</h2><button class="btn sm" onclick="A.catEdit(null)">Ajouter</button></div><div class="mt">${CAT_ORDER.map(c => DB.catalog.filter(x => x.c === c).map(x => `<div class="li tap" onclick="A.catEdit('${x.id}')">${catChip(x.c)}<div class="n"><b>${esc(x.n)}</b><span class="xs mu">${dur(x.d)} · niveau ${levelOf(x.i).code}${x.z ? ' · sommeil' : ''}${x.t !== 'aucune' ? ' · pauses ' + PAUSES[x.t].label.split(' ·')[0].toLowerCase() : ''}</span></div><span class="num small">${costStr({ s: 0, e: x.d, i: x.i })}</span></div>`).join('')).join('')}</div></div>`;
   h += `<div class="card"><h2>Modèles de journée</h2><p class="xs mu" style="margin-bottom:6px">Jours où le modèle est proposé automatiquement (un jour = un seul modèle).</p>${DB.templates.length ? DB.templates.map(t => `<div class="li wrap"><div class="n"><b>${esc(t.n)}</b><span class="xs mu">${t.b.length} blocs · ${fmtE(t.b.reduce((a, x) => a + x.d * x.i, 0))} créneaux d'énergie</span></div><button class="btn sm bad" onclick="A.delTpl('${t.id}')">Supprimer</button>
     <div class="wdrow">${['L', 'M', 'M', 'J', 'V', 'S', 'D'].map((l, w) => `<button class="wd${(t.wd || []).includes(w) ? ' on' : ''}" onclick="A.tplWd('${t.id}',${w})" aria-label="${WD[w]}">${l}</button>`).join('')}</div></div>`).join('') : '<p class="small mu">Aucun. Crée-en un depuis une journée : « Enregistrer comme modèle ».</p>'}</div>`;
+  h += vSetTrier();
   h += `<div class="card"><h2>Données</h2>
     <div class="grid2"><button class="btn" onclick="A.exportJSON()">Sauvegarde JSON</button><button class="btn" onclick="A.exportCSV()">Export CSV</button>
-    <label class="btn center" style="display:block">Restaurer<input type="file" accept=".json,.txt,application/json,text/plain" style="display:none" onchange="A.importFile(this)"></label><button class="btn" onclick="A.importIT()">Importer Infinity Time</button></div>
+    <label class="btn center" style="display:block">Restaurer<input type="file" accept=".json,.txt,application/json,text/plain" style="display:none" onchange="A.importFile(this)"></label><button class="btn" onclick="A.importIT()">Importer Infinity Time</button>
+    <label class="btn center" style="display:block">Importer Trier<input type="file" accept=".json,.txt,application/json,text/plain" style="display:none" onchange="A.trImportFile(this)"></label></div>
+    <div class="xs mu mt">${DB.tr.items.length} tâche(s) · ${DB.tr.box.length} petit(s) rien(s)${DB.tr.imp ? ` · données de l'app Trier reprises le ${new Date(DB.tr.imp).toLocaleDateString('fr-FR')}` : ''}${DB.tr.decisions.length ? ` · ${DB.tr.decisions.length} décision(s) de Trier 1.0 conservées, non affichées` : ''}</div>
     <div class="xs mu mt">${Object.keys(DB.days).length} journée(s) · ${Object.keys(DB.legacy).length} jour(s) historiques · stockage ${(used / 1e6).toFixed(2)} M car. sur ≈ 5 (${Math.round(used / QUOTA * 100)} %) · dernier export : ${DB.lastExport ? new Date(DB.lastExport).toLocaleDateString('fr-FR') : 'jamais'}</div>
     ${(() => { const ks = backupKeys(), sz = ks.reduce((a, k) => a + (lsGet(k) || '').length, 0); return ks.length ? `<div class="row sp mt"><span class="xs mu">Copies de sécurité : ${ks.length} (${(sz / 1e6).toFixed(2)} M car.)</span><button class="btn sm" onclick="A.purgeCopies()">Supprimer</button></div>` : ''; })()}
     <div class="xs mu">Stockage persistant : ${UI.persist === true ? '<span class="c-ok">accordé</span>' : UI.persist === false ? '<span class="c-warn">non accordé (installer l’app sur l’écran d’accueil aide Chrome à l’accorder)</span>' : 'inconnu'}</div></div>`;
@@ -361,13 +401,20 @@ function vSet() {
     <tr><td>Bilan cible 3 min</td><td class="r c-warn">Hypothèse</td></tr>
     <tr><td>Fiabilité : corrélation de rang, seuil 5 %, au moins 30 jours</td><td class="r mu">Convention</td></tr>
     <tr><td>Analyse du sommeil : nuits confirmées au bilan uniquement</td><td class="r mu">Règle</td></tr>
-    <tr><td>Capacité modifiée : jamais rétroactive sur une journée clôturée</td><td class="r mu">Règle</td></tr></table>
+    <tr><td>Capacité modifiée : jamais rétroactive sur une journée clôturée</td><td class="r mu">Règle</td></tr>
+    <tr><td>Règle des 120 s : moins de 2 min → maintenant, sinon ne pas commencer</td><td class="r mu">Livre 2025</td></tr>
+    <tr><td>Matrice d'Eisenhower : Q1 faire, Q2 planifier, Q3 déléguer, Q4 oublier</td><td class="r mu">Livre 2019</td></tr>
+    <tr><td>« Une seule tâche aujourd'hui » ; filtres en entonnoir ; 32e jour</td><td class="r mu">Livre 2019</td></tr>
+    <tr><td>Important = passe tes filtres ; Q3 sans personne → Q1 ; relance à ${RELANCE_J} jours ; durée proposée ${dur(TASK_D)}</td><td class="r c-warn">Choix de l'app</td></tr>
+    <tr><td>Valeur horaire : moyenne de 4 montants</td><td class="r c-warn">Fiche de lecture</td></tr>
+    <tr><td>Tâche posée dans une journée : liée à son bloc par le libellé ; faite si le bloc est là à la clôture, sinon de retour dans « À planifier »</td><td class="r mu">Règle</td></tr>
+    <tr><td>Alternative à la matrice (« Pourquoi la matrice est-elle cassée ? », 2025)</td><td class="r c-warn">Non trouvée, non codée</td></tr></table>
     <div class="row sp mt"><span class="xs mu">Version ${APP_VERSION}</span><button class="btn sm bad" onclick="A.reset()">Tout effacer</button></div></div>`;
   return h;
 }
 
 /* ---------- feuilles ---------- */
-function sheet(html) { $('#sh').innerHTML = html; $('#sh').classList.add('on'); $('#ov').classList.add('on'); }
+function sheet(html) { $('#sh').innerHTML = html; $('#sh').classList.add('on'); $('#ov').classList.add('on'); $('#undo').classList.remove('on'); }   // la barre d'annulation ne masque pas la feuille
 function toast(t) { const e = $('#toast'); e.textContent = t; e.classList.add('on'); clearTimeout(toast._t); toast._t = setTimeout(() => e.classList.remove('on'), 2200); }
 function confirmDlg(txt, ok, fn, bad) { UI.cf = fn; sheet(`<h3>${txt}</h3><div class="grid2 mt2"><button class="btn" onclick="A.closeSheet()">Annuler</button><button class="btn ${bad ? 'bad' : 'pri'}" onclick="A.cfOk()">${ok}</button></div>`); }
 function segCats(sel, fn) { return `<div class="seg">${CAT_ORDER.map(c => `<button class="${sel === c ? 'on' : ''}" style="background:${tint(CATS[c].color, sel === c ? .5 : .14)}" onclick="${fn}('${c}')">${CATS[c].code}<small>${CATS[c].label.split(' ')[0]}</small></button>`).join('')}</div>`; }
@@ -410,7 +457,8 @@ function sheetFill() {
   let h = `<h3>${F.ins ? 'Insérer' : 'Remplir'} · <span class="num">${slotClock(F.s, ds)}–${slotClock(F.e, ds)}</span></h3>`;
   if (F.lo < F.e - 1) h += `<div class="row sp"><span class="small">Début</span>${stepper(F.s, F.lo, F.e - 1, 'A.fkMove', 'A.fkSet', s => slotClock(s, ds))}</div>`;
   if (F.ins) h += `<p class="xs mu mt">Le bloc choisi recouvre ce qui est déjà planifié sur sa durée.</p>`;
-  if (DB.backlog.length) h += `<label class="l">À replacer</label>${DB.backlog.map(x => row(x, `A.placeB('${x.id}')`)).join('')}`;
+  const tk = DB.tr.items.filter(x => (x.st === 'todo' && x.pd === F.k) || isQ1(x) || toPlan(x));
+  if (tk.length) h += `<label class="l">Tâches de Trier</label>${tk.map(x => `<div class="li tap" onclick="A.fillTask('${x.id}')">${x.q ? qChip(x.q) : x.c ? catChip(x.c) : ''}<div class="n"><b>${esc(x.n)}</b><span class="xs mu">${x.d ? dur(Math.min(x.d, room)) + (x.d > room ? ' (tronqué)' : '') : 'durée à choisir'}</span></div>${x.d && x.i != null ? `<span class="num small">${costStr({ s: 0, e: Math.min(x.d, room), i: x.i })}</span>` : ''}</div>`).join('')}`;
   h += `<label class="l">Catalogue</label>${CAT_ORDER.map(c => DB.catalog.filter(x => x.c === c).map(x => row(x, `A.place('${x.id}')`)).join('')).join('')}
     <button class="btn full mt" onclick="A.custom()">Bloc personnalisé</button>`;
   sheet(h);
@@ -501,11 +549,13 @@ function csvCell(v) { v = String(v ?? ''); return /[;"\n]/.test(v) ? '"' + v.rep
 /* ---------- actions ---------- */
 const A = {
   tab(t) { UI.tab = t; if (t === 'journee') { UI.scroll = true; } try { history.replaceState(null, '', '#' + t); } catch (e) { location.hash = t; } window.scrollTo(0, 0); render(); },
-  goDay(k) { UI.dk = k; A.tab('journee'); },
+  goDay(k) { UI.dk = k; UI.dv = 'jour'; A.tab('journee'); },
+  dv(m) { UI.dv = m; UI.scroll = true; window.scrollTo(0, 0); render(); },
+  wkShift(n) { UI.dk = addDays(UI.dk || todayKey(), 7 * n); render(); },
   goBilan(k) { A.goDay(k); A.bilan(k); },
   shift(n) { UI.dk = addDays(UI.dk || todayKey(), n); UI.scroll = true; render(); },
   firstDone() { DB.settings.first = false; save(); render(); },
-  closeSheet() { $('#sh').classList.remove('on'); $('#ov').classList.remove('on'); UI.ed = null; UI.ce = null; UI.bl = null; },
+  closeSheet() { $('#sh').classList.remove('on'); $('#ov').classList.remove('on'); UI.ed = null; UI.ce = null; UI.bl = null; UI.tg = null; UI.it = null; UI.dg = null; UI.fe = null; UI.pl = null; },
   undo() { if (!UNDO) return; DB = JSON.parse(UNDO); UNDO = null; save(); $('#undo').classList.remove('on'); A.closeSheet(); render(); toast('Action annulée'); },
   noteOk() { LOAD_NOTE = ''; render(); },
   exportRaw() { const n = `${ymd(new Date())} - Journee - Donnees brutes`; exportFile(n + '.json', lsGet(KEY) || JSON.stringify(DB), 'application/json', true, n + '.txt', 'text/plain'); },
@@ -530,16 +580,12 @@ const A = {
     const F = UI.fk, x = DB.catalog.find(z => z.id === cid), b = { id: uid(), s: F.s, e: Math.min(F.e, F.s + x.d), n: x.n, c: x.c, i: x.i, t: x.t, z: x.z };
     undoable('Bloc ajouté', () => { paint(day(F.k, true), b); save(); }); done(F.k, b.e);
   },
-  placeB(bid) {
-    const F = UI.fk, x = DB.backlog.find(z => z.id === bid); if (!x) return;
-    const b = { id: uid(), s: F.s, e: Math.min(F.e, F.s + x.d), n: x.n, c: x.c, i: x.i, t: x.t, z: x.z };
-    undoable('Bloc replacé', () => { paint(day(F.k, true), b); DB.backlog = DB.backlog.filter(z => z.id !== bid); save(); }); done(F.k, b.e);
-  },
-  placeBacklog(k, bid) {
-    const d = day(k, true), x = DB.backlog.find(z => z.id === bid), g = gaps(d.b);
-    const t = g.find(z => z.e - z.s >= x.d) || g[0];
-    if (!t) return toast('Aucun créneau libre ce jour-là');
-    UI.fk = { k, s: t.s, e: t.e, lo: t.s }; A.placeB(bid); toast(`Placé à ${slotClock(t.s, d.ds)}`);
+  /* tâche de Trier posée dans le créneau choisi ; sans durée ni nature connues, la feuille Planifier s'ouvre */
+  fillTask(id) {
+    const F = UI.fk, x = DB.tr.items.find(z => z.id === id); if (!x) return;
+    if (!x.d || !x.c || x.i == null) { if (UI.bl) UI.bl = null; return A.plan(id, F.k, F.s); }
+    const b = { ...taskBlock(x, F.s), e: Math.min(F.e, F.s + x.d) };
+    undoable('Tâche posée', () => { A._unpost(x); paint(day(F.k, true), b); Object.assign(x, { st: 'placed', pd: F.k, ps: F.s, from: '' }); save(); }); done(F.k, b.e);
   },
   custom() { const F = UI.fk; UI.ed = { k: F.k, isNew: true, lo: 0, hi: NS, x: { id: uid(), s: F.s, e: Math.min(F.e, F.s + 3), n: '', c: 'perso', i: 1, t: 'aucune', z: 0 } }; sheetEd(); },
   edC(c) { UI.ed.x.c = c; sheetEd(); },
@@ -571,7 +617,13 @@ const A = {
   },
   edDefer() {
     const E = UI.ed, d = day(E.k), x = E.x;
-    undoable('Reporté dans « À replacer »', () => { DB.backlog.push({ id: uid(), n: x.n || CATS[x.c].label, c: x.c, i: x.i, t: x.t, z: x.z, d: x.e - x.s, from: E.k }); d.b = d.b.filter(z => z.id !== x.id); save(); });
+    undoable('Reporté dans « À planifier »', () => {
+      // tâche de Trier posée ici (même libellé) : elle revient dans la liste ; sinon, nouvelle tâche reportée du bilan
+      const tk = DB.tr.items.find(z => z.st === 'placed' && z.pd === E.k && z.n === x.n);
+      if (tk) Object.assign(backToPlan(tk, E.k), { d: x.e - x.s, c: x.c, i: x.i });
+      else DB.tr.items.push(newTask(x.n || CATS[x.c].label, { st: 'todo', og: 'bilan', from: E.k, c: x.c, i: x.i, t: x.t, z: x.z, d: x.e - x.s }));
+      d.b = d.b.filter(z => z.id !== x.id); save();
+    });
     done(E.k, null);
   },
   edToCat() { const x = UI.ed.x; DB.catalog.push({ id: uid(), n: (x.n || CATS[x.c].label).trim(), c: x.c, i: x.i, d: x.e - x.s, t: x.t, z: x.z }); save(); toast('Ajouté au catalogue'); },
@@ -631,12 +683,13 @@ const A = {
   closeOk(k, f) {
     const d = day(k); d.fat = f; d.clo = Date.now();
     if (UI.bl && UI.bl.k === k) d.bt = Math.round((Date.now() - UI.bl.t0) / 1000);
+    const ct = closeTasks(DB, k, d.clo);   // tâches de Trier du jour : faites si leur bloc est là, sinon de retour dans « À planifier »
     if (!save()) return;
     UI.bl = null; render();
-    const msg = d.bt ? `Journée clôturée · bilan en ${fmtSec(d.bt)}` : 'Journée clôturée';
-    const nk = addDays(k, 1), nd = day(nk), t = tplFor(nk), empty = !nd || !nd.b.length, nb = DB.backlog.length;
+    const msg = (d.bt ? `Journée clôturée · bilan en ${fmtSec(d.bt)}` : 'Journée clôturée') + (ct.done ? ` · ${ct.done} tâche${ct.done > 1 ? 's' : ''} faite${ct.done > 1 ? 's' : ''}` : '');
+    const nk = addDays(k, 1), nd = day(nk), t = tplFor(nk), empty = !nd || !nd.b.length, nb = prepList(nk).length;
     if (nk <= addDays(todayKey(), 1) && (empty && t || nb)) {
-      const what = [empty && t ? `appliquer « ${esc(t.n)} »` : '', nb ? `placer ${nb} tâche${nb > 1 ? 's' : ''} à replacer` : ''].filter(Boolean).join(' et ');
+      const what = [empty && t ? `appliquer « ${esc(t.n)} »` : '', nb ? `placer ${nb} tâche${nb > 1 ? 's' : ''} (prévue${nb > 1 ? 's' : ''} ce jour ou reportée${nb > 1 ? 's' : ''})` : ''].filter(Boolean).join(' et ');
       sheet(`<h3>${msg}</h3><p class="small">Préparer ${fmtDay(nk, true)} : ${what}.</p>
         <button class="btn pri full mt2" onclick="A.prep('${nk}')">Préparer ${fmtDay(nk)}</button>
         <div class="grid2 mt"><button class="btn" onclick="A.closeSheet();A.goDay('${nk}')">Ouvrir sans préparer</button><button class="btn" onclick="A.closeSheet()">Plus tard</button></div>`);
@@ -647,12 +700,13 @@ const A = {
     undoable('Lendemain préparé', () => {
       const d = day(nk, true), t = tplFor(nk);
       if (!d.b.length && t) { d.ds = DB.settings.ds; for (const x of tplBlocks(t, d.ds)) paint(d, x); mergeAdj(d); }
-      const keep = [];
-      for (const x of DB.backlog) {
+      for (const x of d.b.length ? prepList(nk) : []) {   // journée vide sans modèle : rien n'est posé à minuit
+        if (!x.d) x.d = TASK_D; if (!x.c) x.c = 'perso'; if (x.i == null) x.i = 1;
         const g = gaps(d.b).find(z => z.e - z.s >= x.d);
-        if (g) { paint(d, { id: uid(), s: g.s, e: g.s + x.d, n: x.n, c: x.c, i: x.i, t: x.t, z: x.z }); placed++; } else { keep.push(x); left++; }
+        if (g) { paint(d, taskBlock(x, g.s)); Object.assign(x, { st: 'placed', pd: nk, ps: g.s, from: '' }); placed++; } else left++;
       }
-      DB.backlog = keep; save();
+      if (!d.b.length) left = prepList(nk).length;
+      save();
     });
     A.closeSheet(); UI.dk = nk; A.tab('journee');
     toast(`${cap1(fmtDay(nk))} préparé${placed ? ` · ${placed} tâche(s) placée(s)` : ''}${left ? ` · ${left} sans créneau libre` : ''}`);
@@ -720,6 +774,7 @@ const A = {
     const f = inp.files[0]; if (!f) return;
     f.text().then(t => {
       const o = JSON.parse(t);
+      if (o && o.tr && !o.days) return toast('Sauvegarde de l’app Trier : utilise « Importer Trier »');
       if (!o || typeof o !== 'object' || !Number.isInteger(o.v) || !o.days || !o.settings) throw 0;
       if (o.v > SCHEMA) return toast(`Sauvegarde d'une version plus récente (format v${o.v}) : mets l'app à jour`);
       const [n, bad] = normalize(migrate(o));
@@ -744,12 +799,13 @@ const A = {
   reset() { sheet(`<h3>Tout effacer</h3><p class="small mu">Écris EFFACER pour confirmer. Exporte d'abord une sauvegarde.</p><input type="text" id="rst" class="mt"><button class="btn bad full mt" onclick="A.resetOk()">Effacer définitivement</button>`); },
   resetOk() { if ($('#rst').value.trim() !== 'EFFACER') return toast('Écris EFFACER'); undoable('Données effacées', () => { DB = defaults(); save(); }); A.closeSheet(); render(); }
 };
+Object.assign(A, TA);   // actions de l'onglet Trier (trier.js)
 
 /* ---------- démarrage ---------- */
 const h0 = (location.hash || '').slice(1);
-if (['maintenant', 'journee', 'stats', 'reglages'].includes(h0)) UI.tab = h0;
+if (TABS.includes(h0)) UI.tab = h0;
 window.addEventListener('storage', e => { if (e.key === REV_KEY && e.newValue !== String(REV)) reloadFromDisk('Données mises à jour depuis une autre fenêtre'); });
-window.addEventListener('hashchange', () => { const t = location.hash.slice(1); if (t !== UI.tab && ['maintenant', 'journee', 'stats', 'reglages'].includes(t)) A.tab(t); });
+window.addEventListener('hashchange', () => { const t = location.hash.slice(1); if (t !== UI.tab && TABS.includes(t)) A.tab(t); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('#sh').classList.contains('on')) render(); });
 setInterval(() => { if (UI.tab === 'maintenant' && !$('#sh').classList.contains('on')) render(); }, 60000);
 render();
