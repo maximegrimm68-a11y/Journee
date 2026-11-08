@@ -28,11 +28,17 @@ Les données ne sont **pas** dans le dépôt : elles restent dans le stockage lo
 
 ## Publier une mise à jour
 
-1. Incrémenter `APP_VERSION` dans `model.js`, par exemple `1.4.0` → `1.4.1`.
-2. Mettre la **même** version dans `VERSION` de `sw.js` (`journee-1.4.1`). Tout nouveau fichier doit aussi être ajouté à la liste `FILES` de `sw.js`.
+1. Incrémenter `APP_VERSION` dans `model.js`, par exemple `1.4.1` → `1.4.2`.
+2. Mettre la **même** version dans `VERSION` de `sw.js` (`journee-1.4.2`). Tout nouveau fichier doit aussi être ajouté à la liste `FILES` de `sw.js`.
 3. Pousser les fichiers. À l'ouverture suivante, l'app affiche « Nouvelle version installée → Recharger ».
 
 Si la version n'est pas changée dans `sw.js`, le téléphone garde l'ancienne version en cache.
+
+## Cohabitation avec d'autres apps sur la même adresse
+
+Journée et Trier peuvent être servies depuis la même adresse `https://<utilisateur>.github.io`. Elles restent indépendantes :
+- **Stockage** : Journée n'utilise que les clés `journee.v1*`, et Trier que `trier.v1*`.
+- **Caches** : depuis la 1.4.1, le service worker ne supprime que les caches dont le nom commence par `journee-`. Avant, il effaçait aussi le cache de Trier, qui ne s'ouvrait plus hors ligne après une mise à jour de Journée.
 
 ## Données
 

@@ -1,7 +1,7 @@
 'use strict';
 /* Journée — modèle : constantes, calculs et format de données. Aucun accès au DOM ni au stockage. */
 /* =====================================================================
-   JOURNÉE — v1.4.0
+   JOURNÉE — v1.4.1
    Fusion de « Ma Pile » (batterie) et « Infinity Time » (natures du temps)
    Règles issues de F. Olicard :
    - créneau de 20 min, tâche étalon = 1 créneau d'énergie, capacité de
@@ -10,7 +10,7 @@
    Hypothèses à calibrer : niveaux 0, ½, 3 et Recharge (−1) ;
    recalibrage de la capacité sur la médiane des jours « fatigue 3/5 ».
    ===================================================================== */
-const APP_VERSION = '1.4.0', SCHEMA = 2, SLOT = 20, NS = 72, PX = 18, KEY = 'journee.v1', IT_KEY = 'infinity_data_v10';
+const APP_VERSION = '1.4.1', SCHEMA = 2, SLOT = 20, NS = 72, PX = 18, KEY = 'journee.v1', IT_KEY = 'infinity_data_v10';
 const CATS = {
   pro:         { code: 'PRO', label: 'Professionnel', color: '#5B95FF' },
   perso:       { code: 'PER', label: 'Personnel',     color: '#34C48E' },
